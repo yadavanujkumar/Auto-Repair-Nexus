@@ -5,6 +5,11 @@ Note: These are demonstration tests. Full test coverage would require a test Neo
 import unittest
 from unittest.mock import Mock, patch, MagicMock
 from datetime import datetime
+import sys
+import os
+
+# Add parent directory to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from src.ingestion.temporal_ingestion import Entity, Relationship, TemporalGraphIngestion
 from src.agents.conflict_detection import SemanticConflict, ConflictDetectionAgent
