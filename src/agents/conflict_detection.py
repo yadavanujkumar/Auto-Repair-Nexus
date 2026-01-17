@@ -216,11 +216,17 @@ class ConflictDetectionAgent:
     def _assess_severity(self, relationships: List[Dict[str, Any]]) -> str:
         """Assess the severity of a conflict based on relationship properties."""
         # High severity if multiple recent relationships
-        recent_count = sum(
-            1 for r in relationships
-            if r.get("timestamp", "") and 
-            (datetime.utcnow() - datetime.fromisoformat(r["timestamp"])).days < 30
-        )
+        recent_count = 0
+        for r in relationships:
+            timestamp_str = r.get("timestamp", "")
+            if timestamp_str:
+                try:
+                    timestamp = datetime.fromisoformat(timestamp_str)
+                    if (datetime.utcnow() - timestamp).days < 30:
+                        recent_count += 1
+                except (ValueError, TypeError):
+                    # Skip relationships with invalid timestamps
+                    continue
         
         if recent_count > 1:
             return "high"

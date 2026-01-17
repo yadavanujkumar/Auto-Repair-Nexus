@@ -153,76 +153,70 @@ Additional Info: {json.dumps(rel.get('properties', {}))}
         """
         Apply the correction to the knowledge graph using Cypher.
         Updates relationships based on the research decision.
+        All operations are performed in a single transaction for consistency.
         """
         try:
             correct_rel_id = decision.get("correct_relationship_id")
             outdated_rel_ids = decision.get("outdated_relationship_ids", [])
             confidence = decision.get("confidence", 1.0)
             reasoning = decision.get("reasoning", "")
+            timestamp = datetime.utcnow().isoformat()
             
-            # Mark correct relationship as current with updated confidence
-            if correct_rel_id:
-                update_correct = """
-                MATCH ()-[r:RELATED_TO {id: $rel_id}]->()
+            # Perform all updates in a single transaction
+            transaction_query = """
+            // Mark correct relationship as current with updated confidence
+            CALL {
+                MATCH ()-[r:RELATED_TO {id: $correct_rel_id}]->()
                 SET r.is_current = true,
                     r.confidence = $confidence,
                     r.verified_at = $timestamp,
                     r.verification_reasoning = $reasoning
-                RETURN r.id
-                """
-                
-                self.conn.execute_write(update_correct, {
-                    "rel_id": correct_rel_id,
-                    "confidence": confidence,
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "reasoning": reasoning,
-                })
-                
-            # Mark outdated relationships
-            if outdated_rel_ids:
-                update_outdated = """
+                RETURN r.id as correct_id
+            }
+            
+            // Mark outdated relationships
+            CALL {
                 MATCH ()-[r:RELATED_TO]->()
-                WHERE r.id IN $rel_ids
+                WHERE r.id IN $outdated_rel_ids
                 SET r.is_current = false,
                     r.outdated_at = $timestamp,
                     r.outdated_reasoning = $reasoning
-                RETURN count(r) as updated_count
-                """
-                
-                self.conn.execute_write(update_outdated, {
-                    "rel_ids": outdated_rel_ids,
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "reasoning": reasoning,
-                })
-                
-            # Update entity to clear conflict flag
-            clear_conflict = """
-            MATCH (e:Entity {id: $entity_id})
-            SET e.has_conflict = false,
-                e.last_healed_at = $timestamp,
-                e.healing_count = COALESCE(e.healing_count, 0) + 1
-            RETURN e.id
+                RETURN count(r) as outdated_count
+            }
+            
+            // Update entity to clear conflict flag
+            CALL {
+                MATCH (e:Entity {id: $entity_id})
+                SET e.has_conflict = false,
+                    e.last_healed_at = $timestamp,
+                    e.healing_count = COALESCE(e.healing_count, 0) + 1
+                RETURN e.id as entity_id
+            }
+            
+            // Mark conflict as resolved
+            CALL {
+                MATCH (c:ConflictLog {id: $conflict_id})
+                SET c.resolved = true,
+                    c.resolved_at = $timestamp,
+                    c.resolution_decision = $decision
+                RETURN c.id as conflict_log_id
+            }
+            
+            RETURN correct_id, outdated_count, entity_id, conflict_log_id
             """
             
-            self.conn.execute_write(clear_conflict, {
+            parameters = {
+                "correct_rel_id": correct_rel_id or "",
+                "outdated_rel_ids": outdated_rel_ids,
+                "confidence": confidence,
+                "timestamp": timestamp,
+                "reasoning": reasoning,
                 "entity_id": conflict.entity_id,
-                "timestamp": datetime.utcnow().isoformat(),
-            })
-            
-            # Mark conflict as resolved
-            resolve_conflict = """
-            MATCH (c:ConflictLog {id: $conflict_id})
-            SET c.resolved = true,
-                c.resolved_at = $timestamp,
-                c.resolution_decision = $decision
-            RETURN c.id
-            """
-            
-            self.conn.execute_write(resolve_conflict, {
                 "conflict_id": conflict.conflict_id,
-                "timestamp": datetime.utcnow().isoformat(),
                 "decision": json.dumps(decision),
-            })
+            }
+            
+            result = self.conn.execute_write(transaction_query, parameters)
             
             self.corrections_made += 1
             return True
